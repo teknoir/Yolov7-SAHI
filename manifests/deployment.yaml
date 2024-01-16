@@ -1,0 +1,24 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yolov7-SAHI
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: yolov7-SAHI
+  template:
+    metadata:
+      labels:
+        app: yolov7-SAHI
+    spec:
+      containers:
+        - name: yolov7-SAHI
+          image: gcr.io/teknoir/yolov7-SAHI:latest
+          imagePullPolicy: Always
+          env:
+            - name: LOG_LEVEL
+              value: "INFO"

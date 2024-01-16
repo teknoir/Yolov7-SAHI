@@ -1,0 +1,43 @@
+timeout: '18000s'
+
+options:
+  env:
+    - DOCKER_CLI_EXPERIMENTAL=enabled
+
+steps:
+  - id: INIT-BUILDX
+    name: gcr.io/cloud-builders/docker
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        docker run --privileged gcr.io/teknoir/binfmt-qemu:v0.8-v7.0.0
+        docker buildx create --name teknoirmultiarchbuilder --use
+        docker buildx inspect --bootstrap
+    waitFor: ['-']
+
+  - id: BUILD-BASE-IMAGE
+    name: gcr.io/cloud-builders/docker
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -eo pipefail
+        ./docker-buildx build \
+          --builder teknoirmultiarchbuilder \
+          --platform=linux/amd64,linux/arm64 \
+          --push \
+          --label "git-commit=${SHORT_SHA}" \
+          -t gcr.io/${PROJECT_ID}/yolov7-SAHI:${BRANCH_NAME}-${SHORT_SHA} \
+          .
+        
+        if [ ${BRANCH_NAME} == 'main' ]; then
+          ./docker-buildx build \
+            --builder teknoirmultiarchbuilder \
+            --platform=linux/amd64,linux/arm64 \
+            --push \
+            --label "git-commit=${SHORT_SHA}" \
+            -t gcr.io/${PROJECT_ID}/yolov7-SAHI:latest \
+            .
+        fi
+    waitFor: ['INIT-BUILDX']
