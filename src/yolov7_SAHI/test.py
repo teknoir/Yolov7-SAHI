@@ -61,6 +61,8 @@ class NumpyEncoder(json.JSONEncoder):
         elif isinstance(obj, np.array):
             return obj.tolist()
         return json.JSONEncoder.default(self, obj)
+    
+    
 def detection_result2ByteTrack(result):
     out = []
     names = []
@@ -72,7 +74,7 @@ def detection_result2ByteTrack(result):
         names.append(r.category.name)
     return np.array(out),names
         
-
+    
 APP_NAME = os.getenv('APP_NAME', 'yolov7-SAHI-bytetrack')
 APP_VERSION = os.getenv('APP_VERSION', '0.1.0')
 
@@ -96,9 +98,13 @@ args = {
     'CLASSES_TO_DETECT': str(os.getenv("CLASSES_TO_DETECT", "person,bicycle,car,motorbike,truck")),
     "TRACKER_THRESHOLD": float(os.getenv("TRACKER_THRESHOLD", "0.5")),
     "TRACKER_MATCH_THRESHOLD": float(os.getenv("TRACKER_MATCH_THRESHOLD", "0.8")),
-    "TRACKER_BUFFER": int(os.getenv("TRACKER_BUFFER", "30")),
+    "TRACKER_BUFFER": int(os.getenv("TRACKER_BUFFER", "100")),
     "TRACKER_FRAME_RATE": int(os.getenv("TRACKER_FRAME_RATE", "10")),
-    "ENABLE_SAHI" : os.getenv("ENABLE_SAHI","")
+    "ENABLE_SAHI" : os.getenv("ENABLE_SAHI",""),
+    "SLICE_WIDTH" :  int(os.getenv("SLICE_WIDTH","640")),
+    "SLICE_HEIGHT" :  int(os.getenv("SLICE_HEIGHT","384")),
+    "OVERLAP_WIDTH" :  float(os.getenv("OVERLAP_WIDTH","0.2")),
+    "OVERLAP_HEIGHT" :  float(os.getenv("OVERLAP_HEIGHT","0.2")),
 }
 
 logger = logging.getLogger(args['APP_NAME'])
@@ -161,7 +167,10 @@ else:
         args["CLASSES_TO_DETECT"] = cls_ids
         del cls_ids, cls_to_detect
 
-
+if args['DEVICE']=="0":
+    device = "cuda:0"
+else:
+    device = "cpu"
 logger.info("Loading YOLOv7 Model")
 
 yolov7_model_path = '/home/felix/model.pt'
@@ -169,8 +178,8 @@ yolov7_model_path = '/home/felix/model.pt'
 detection_model = AutoDetectionModel.from_pretrained(
     model_type='yolov7pip', # or 'yolov7hub'
     model_path=yolov7_model_path,
-    confidence_threshold=0.3,
-    device="cuda:0", # or 'cuda:0'
+    confidence_threshold=args['CONF_THRESHOLD'],
+    device=device, # or 'cuda:0'
 )
 
 
@@ -182,17 +191,147 @@ tracker = BYTETracker(track_thresh=args["TRACKER_THRESHOLD"],
 myImage = plt.imread('/mnt/e/data/teknoir/test.png')[:,:,0:3]
 myImagePIL = Image.fromarray((myImage[:,:,::-1]*255).astype(np.uint8))
 
-result = get_prediction(myImagePIL, detection_model)
-img_height, img_width = result.image_height,result.image_width
 
-out,names =detection_result2ByteTrack(result)
 
-tracked_objects = tracker.update(raw_detection)
-result_sliced = get_sliced_prediction(
-    myImagePIL,
-    detection_model,
-    slice_height = 640,
-    slice_width = 384,
-    overlap_height_ratio = 0.2,
-    overlap_width_ratio = 0.2,
-)
+
+def detect_and_track(im0):
+    t0 = time.perf_counter()
+
+    if args["ENABLE_SAHI"]:
+        result = get_sliced_prediction(
+            im0,
+            detection_model,
+            slice_height = args['SLICE_WIDTH'],
+            slice_width = args['SLICE_HEIGHT'],
+            overlap_height_ratio = args['OVERLAP_HEIGHT'],
+            overlap_width_ratio = args['OVERLAP_WIDTH'],
+            verbose = 0
+        )
+    else:
+        result = get_prediction(im0, detection_model)
+    raw_detection,names = detection_result2ByteTrack(result)
+    tracked_objects = tracker.update(raw_detection)
+    inference_time = time.perf_counter()-t0
+    logger.info("{} Objects - Time: {}".format(
+        len(tracked_objects), inference_time))
+
+def load_image(base64_image):
+    image_base64 = base64_image.split(',', 1)[-1]
+    image = Image.open(BytesIO(base64.b64decode(image_base64)))
+    im0 = np.array(image)
+    height = im0.shape[0]
+    width = im0.shape[1]
+    return im0, height, width
+
+def on_message(c, userdata, msg):
+    message = str(msg.payload.decode("utf-8", "ignore"))
+    # payload: {“timestamp”: “…”, “image”: <base64_mime>, “camera_id”: “A”, “camera_name”: “…”}
+    
+    try: 
+        data_received = json.loads(message)
+    except json.JSONDecodeError as e:
+        logger.error("Error decoding JSON:", e)
+        return
+    
+    if "image" not in data_received:
+        logger.error("No Image. Exiting.")
+        return
+    
+    if "location" not in data_received:
+        logger.warning("No Location. Proceeding.")
+        data_received["location"] = {"country": "",
+                                     "region": "",
+                                     "site": "",
+                                     "zone": "",
+                                     "group": ""}
+    
+    if "timestamp" not in data_received:
+        logger.warning("No timestamp. Using current time.")
+        data_received["timestamp"] = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+
+    msg_time_0 = time.perf_counter()
+
+    try:
+        img, orig_height, orig_width = load_image(data_received["image"])
+    except Exception as e:
+        logger.error(f"Could not load image. Error: {e}")
+        return
+    
+    tracked_objects,raw_detection = detect_and_track(img)
+
+    runtime = time.perf_counter() - msg_time_0
+
+    base_payload = {
+            "timestamp": data_received["timestamp"],
+            "location": data_received["location"],
+            "type": "object"
+        }
+
+    if "peripheral" in data_received:
+        base_payload["peripheral"] = data_received["peripheral"]
+
+    if "lineage" in data_received:
+        base_payload["lineage"] = data_received["lineage"]
+    else:
+        base_payload["lineage"] = []
+
+    base_payload["lineage"].append({"name": APP_NAME,
+                                    "version": APP_VERSION, 
+                                    "runtime": runtime})
+
+    detections = []
+    for trk in tracked_objects:
+        detection_event = base_payload.copy()
+
+        obj = {}
+        obj["id"] = str(trk[4])
+        obj["x1"] = float(int(trk[0]) / orig_width)
+        obj["y1"] = float(int(trk[1]) / orig_height)
+        obj["x2"] = float(int(trk[2]) / orig_width)
+        obj["y2"] = float(int(trk[3]) / orig_height)
+        obj["width"] = float(obj["x2"] - obj["x1"])
+        obj["height"] = float(obj["y2"] - obj["y1"])
+        obj["area"] = float(obj["height"] * obj["width"])
+        obj["ratio"] = float(obj["height"] / obj["width"])
+        obj["x_center"] = float((obj["x1"] + obj["x2"])/2.)
+        obj["y_center"] = float((obj["y1"] + obj["y2"])/2.)
+        obj["score"] = float(trk[6])
+        obj["class_id"] = int(trk[5])
+        obj["label"] = args["CLASS_NAMES"][obj["class_id"]]
+
+        detection_event["detection"] = obj
+
+        detections.append(detection_event)
+
+
+    output = base_payload.copy() # copy everything for frontend, even if no detections
+    output["detections"] = detections
+    output["image"] = data_received["image"]
+
+    msg = json.dumps(output, cls=NumpyEncoder)
+    client.publish(userdata['MQTT_OUT_0'], msg)
+    
+if args['MQTT_VERSION'] == '5':
+    client = mqtt.Client(client_id=args['APP_NAME'],
+                         transport=args['MQTT_TRANSPORT'],
+                         protocol=mqtt.MQTTv5,
+                         userdata=args)
+    client.reconnect_delay_set(min_delay=1, max_delay=120)
+    client.on_connect = on_connect_v5
+    client.on_message = on_message
+    client.connect(args['MQTT_SERVICE_HOST'], port=args['MQTT_SERVICE_PORT'],
+                   clean_start=mqtt.MQTT_CLEAN_START_FIRST_ONLY, keepalive=60)
+
+if args['MQTT_VERSION'] == '3':
+    client = mqtt.Client(client_id=args['APP_NAME'], transport=args['MQTT_TRANSPORT'],
+                         protocol=mqtt.MQTTv311, userdata=args, clean_session=True)
+    client.reconnect_delay_set(min_delay=1, max_delay=120)
+    client.on_connect = on_connect_v3
+    client.on_message = on_message
+    client.connect(args['MQTT_SERVICE_HOST'],
+                   port=args['MQTT_SERVICE_PORT'], keepalive=60)
+
+client.enable_logger(logger=logger)
+
+# This runs the network code in a background thread and also handles reconnecting for you.
+client.loop_forever()
