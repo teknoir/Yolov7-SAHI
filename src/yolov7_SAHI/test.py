@@ -12,6 +12,8 @@ import time
 import math
 import base64
 import logging
+from io import BytesIO
+
 from sahi.auto_model import AutoDetectionModel
 from sahi.predict import get_sliced_prediction, predict, get_prediction
 from sahi.utils.file import download_from_url
@@ -20,6 +22,9 @@ import matplotlib.pyplot as plt
 from PIL import Image
 import numpy as np
 from tracker.byte_tracker import BYTETracker
+import paho.mqtt.client as mqtt
+from torchvision.ops import nms
+from torch import tensor
 
 from datetime import timezone, datetime
 
@@ -62,17 +67,25 @@ class NumpyEncoder(json.JSONEncoder):
             return obj.tolist()
         return json.JSONEncoder.default(self, obj)
     
-    
-def detection_result2ByteTrack(result):
+# select only the classes we specified and process raw model outputs for ByteTrack
+def detection_result2ByteTrack(result,class_selection=None):
     out = []
     names = []
+    out = np.empty((0,6), float)
+
     for r in result.object_prediction_list:
         b_result = r.bbox.to_xyxy()
         b_result.append(r.score.value)
         b_result.append(r.category.id)
-        out.append(b_result)
-        names.append(r.category.name)
-    return np.array(out),names
+        if class_selection is not None:
+            #logger.info("{:} {:}".format(class_selection,r.category.name))
+            if r.category.id in class_selection:
+                out = np.concatenate((out, [b_result]))
+                names.append(r.category.name)
+        else:
+            out = np.concatenate((out, [b_result]))
+            names.append(r.category.name)
+    return out,names
         
     
 APP_NAME = os.getenv('APP_NAME', 'yolov7-SAHI-bytetrack')
@@ -82,7 +95,7 @@ args = {
     "APP_NAME": APP_NAME,
     "APP_VERSION": APP_VERSION,
     'MQTT_IN_0': os.getenv("MQTT_IN_0",   f"{APP_NAME}/images"),
-    'MQTT_OUT_0': os.getenv("MQTT_OUT_0", f"{APP_NAME}/events"),
+    'MQTT_OUT_0': os.getenv("MQTT_OUT_0", f"{APP_NAME}/detections"),
     'MQTT_VERSION': os.getenv("MQTT_VERSION", '3'),
     'MQTT_TRANSPORT': os.getenv("MQTT_TRANSPORT", 'tcp'),
     'MQTT_SERVICE_HOST': os.getenv('MQTT_SERVICE_HOST', '127.0.0.1'),
@@ -91,7 +104,7 @@ args = {
     'WEIGHTS': str(os.getenv("WEIGHTS", "model.pt")),
     'AGNOSTIC_NMS': os.getenv("AGNOSTIC_NMS", ""),
     'IMG_SIZE': int(os.getenv("IMG_SIZE", "640")),
-    'CLASS_NAMES': os.getenv("CLASS_NAMES", "/home/felix/obj.names"),
+    'CLASS_NAMES': os.getenv("CLASS_NAMES", "obj.names"),
     'IOU_THRESHOLD': float(os.getenv("IOU_THRESHOLD", "0.45")),
     'CONF_THRESHOLD': float(os.getenv("CONF_THRESHOLD", "0.25")),
     'AUGMENTED_INFERENCE': os.getenv("AUGMENTED_INFERENCE", ""),
@@ -173,13 +186,14 @@ else:
     device = "cpu"
 logger.info("Loading YOLOv7 Model")
 
-yolov7_model_path = '/home/felix/model.pt'
+# yolov7_model_path = '/home/felix/model.pt'
 
 detection_model = AutoDetectionModel.from_pretrained(
     model_type='yolov7pip', # or 'yolov7hub'
-    model_path=yolov7_model_path,
+    model_path=args['WEIGHTS'],
     confidence_threshold=args['CONF_THRESHOLD'],
     device=device, # or 'cuda:0'
+    image_size=args['IMG_SIZE']
 )
 
 
@@ -188,15 +202,15 @@ tracker = BYTETracker(track_thresh=args["TRACKER_THRESHOLD"],
                       track_buffer=args["TRACKER_BUFFER"],
                       frame_rate=args["TRACKER_FRAME_RATE"])
 
-myImage = plt.imread('/mnt/e/data/teknoir/test.png')[:,:,0:3]
-myImagePIL = Image.fromarray((myImage[:,:,::-1]*255).astype(np.uint8))
+# myImage = plt.imread('/mnt/e/data/teknoir/test.png')[:,:,0:3]
+# myImagePIL = Image.fromarray((myImage[:,:,::-1]*255).astype(np.uint8))
 
 
 
 
 def detect_and_track(im0):
     t0 = time.perf_counter()
-
+    # if SAHI is enabled, use the sliding window approach
     if args["ENABLE_SAHI"]:
         result = get_sliced_prediction(
             im0,
@@ -209,11 +223,17 @@ def detect_and_track(im0):
         )
     else:
         result = get_prediction(im0, detection_model)
-    raw_detection,names = detection_result2ByteTrack(result)
+    raw_detection,names = detection_result2ByteTrack(result,class_selection=args["CLASSES_TO_DETECT"])
+    keep = nms(tensor(raw_detection[:,0:4]),tensor(raw_detection[:,4]),args['IOU_THRESHOLD'])
+    raw_detection = raw_detection[np.array(keep),:]
     tracked_objects = tracker.update(raw_detection)
     inference_time = time.perf_counter()-t0
-    logger.info("{} Objects - Time: {}".format(
-        len(tracked_objects), inference_time))
+    t = result.durations_in_seconds
+    if not 'slice' in t.keys():
+        t['slice'] = 0.0
+    logger.info("{} Objects - Time: {:3.1f} ms slice: {:3.1f} ms inference: {:3.1f} ms".format(
+        len(tracked_objects), inference_time*1e3,t['slice']*1e3,t['prediction']*1e3))
+    return tracked_objects,raw_detection
 
 def load_image(base64_image):
     image_base64 = base64_image.split(',', 1)[-1]
