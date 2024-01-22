@@ -22,6 +22,7 @@ pillow = "^10.2.0"
 torch = "^2.1.2"
 torchvision = "^0.16.2"
 paho-mqtt = "^1.6.1"
+sahi = {git = "git@github.com:teknoir/Yolov7-SAHI.git"}
 
 [tool.poetry.dev-dependencies]
 Pygments = ">=2.10.0"
@@ -46,11 +47,6 @@ typeguard = ">=2.13.3"
 
 [tool.poetry.scripts]
 yolov7-SAHI = "yolov7_SAHI.__main__:main"
-
-[[tool.poetry.source]]
-name = "Yolov7-SAHI"
-url = "/home/felix/code/teknoir/Yolov7-SAHI/"
-priority = "supplemental"
 
 [tool.coverage.paths]
 source = ["src", "*/site-packages"]
