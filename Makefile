@@ -18,7 +18,7 @@ install:
 
 run:
 	@echo "Running application..."
-	python app.py
+	python src/yolov7app-SAHI
 
 test:
 	@echo "Running tests..."
@@ -30,11 +30,11 @@ lint-fix:
 
 docker-build:
 	@echo "Building Docker image..."
-	docker build -t yolov7_SAHI -f Dockerfile .
+	docker build -t yolov7app_sahi -f Dockerfile .
 
 docker-run:
 	@echo "Running Docker container..."
-	docker run -e LOG_LEVEL=DEBUG yolov7_SAHI
+	docker run -e LOG_LEVEL=DEBUG yolov7app_sahi
 
 gcloud-build:
 	@echo "Building with Google Cloud Builder..."
