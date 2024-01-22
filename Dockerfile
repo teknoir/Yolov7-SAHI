@@ -6,11 +6,14 @@ ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
 
 # Install and setup poetry
-RUN pip install -U pip \
-    && apt-get update \
-    && apt install -y curl netcat \
-    && curl -sSL https://raw.githubusercontent.com/python-poetry/poetry/master/get-poetry.py | python -
-ENV PATH="${PATH}:/root/.poetry/bin"
+RUN pip install -U pip 
+RUN apt-get update 
+RUN apt install -y curl 
+RUN apt install -y netcat-traditional
+RUN apt install -y pipx
+RUN apt install -y openssh-client
+RUN pipx install poetry
+ENV PATH="${PATH}:/root/.poetry/bin:/root/.local/bin"
 
 WORKDIR /app
 COPY src/. /app
@@ -21,4 +24,4 @@ COPY . .
 RUN poetry config virtualenvs.create false \
   && poetry install --no-interaction --no-ansi
 
-CMD ["python3", "yolov7-SAHI"]
+#CMD ["python3", "yolov7app-SAHI"]
