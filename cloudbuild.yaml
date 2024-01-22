@@ -28,7 +28,7 @@ steps:
           --platform=linux/amd64,linux/arm64 \
           --push \
           --label "git-commit=${SHORT_SHA}" \
-          -t gcr.io/${PROJECT_ID}/yolov7-SAHI:${BRANCH_NAME}-${SHORT_SHA} \
+          -t gcr.io/${PROJECT_ID}/yolov7app-SAHI:${BRANCH_NAME}-${SHORT_SHA} \
           .
         
         if [ ${BRANCH_NAME} == 'main' ]; then
@@ -37,7 +37,7 @@ steps:
             --platform=linux/amd64,linux/arm64 \
             --push \
             --label "git-commit=${SHORT_SHA}" \
-            -t gcr.io/${PROJECT_ID}/yolov7-SAHI:latest \
+            -t gcr.io/${PROJECT_ID}/yolov7app-SAHI:latest \
             .
         fi
     waitFor: ['INIT-BUILDX']
